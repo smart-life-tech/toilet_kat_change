@@ -1,0 +1,22 @@
+{
+  "batteryThreshold": 5,
+  "K": 90,
+  "F": 6,
+  "T": 40,
+  "thermistorResistance": 10000,
+  "r2": 2,
+  "backupTime": 1,
+  "r4": 2,
+  "fanDuration": 7,
+  "H": 16,
+  "continueFeeder": 5,
+  "maxOpeningTime": 12,
+  "typicalOpeningTime": 10,
+  "MOTOR_CUT_TIME": 0,
+  "CUT_MODE_HEAT_TIME": 14,
+  "postCoolingBagDuration": 0,
+  "preFeedFan": 3,
+  "fanReverseTime": 2,
+  "fanReverseStartTime": 0,
+  "backupTimeAfterReopen": 3
+}

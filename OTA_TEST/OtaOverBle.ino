@@ -1,0 +1,529 @@
+/*
+  * Project Information:
+    - Developer: Rupak Poddar
+    - Wible Code Template for ESP32
+    - Tested on: ESP32-C3, ESP32-C6, ESP32-S3
+    - Firmware Updates Over BLE Example
+
+  * NOTE:
+    - This base sketch enables OTA firmware updates via BLE on the ESP32.
+    - Flash this code first before attempting any over-the-air updates.
+
+  * Export Update File:
+    - In the Arduino IDE, select the correct board from Tools --> Board.
+    - Make changes in this template or integrate it into your project.
+    - In Arduino IDE, go to Sketch --> Export Compiled Binary.
+    - A 'build' folder will be created inside your project directory.  
+    - Inside the 'build' folder, open the subfolder named after your selected MCU.  
+    - Locate the file with the '.ino.bin' extension and move it to your phone.
+
+  * Instructions:
+    - Once you’ve completed the steps above, launch the Wible app on your smartphone.
+    - Then select "OTA Update" and look for the listing called "Wible".
+    - Select the '.ino.bin' file you placed on your phone.
+    - Tap the "Start" button in the Wible app to begin the OTA update (file transfer).  
+    - After the transfer is complete, the ESP32 will verify the firmware and automatically reboot into the new version.  
+*/
+
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <Update.h>
+
+// Buzzer pin (ESP32 GPIO)
+const int buzzerPin = 38;
+
+// Beep timing
+const int beepDuration = 100;  // milliseconds
+const int beepPause = 200;     // milliseconds between beeps
+const int waitTime = 5000;    // 10 seconds between cycles
+int numBeeps = 5;              // Number of beeps (can be updated via OTA)
+
+
+#ifdef _BLE_DEVICE_H_
+  #error "Conflicting BLE library detected (possibly ArduinoBLE). Please remove it to proceed."
+#endif
+
+// UUIDs for BLE services and characteristics
+#define UART_SERVICE_UUID      "00000001-0000-FEED-0000-000000000000"
+#define RX_CHARACTERISTIC_UUID "00000002-0000-FEED-0000-000000000000"
+#define TX_CHARACTERISTIC_UUID "00000003-0000-FEED-0000-000000000000"
+
+#define UPDATE_SERVICE_UUID       "00000001-0000-C0DE-0000-000000000000"
+#define UPDATE_CHARACTERISTIC_UUID "00000002-0000-C0DE-0000-000000000000"
+
+// BLE server/characteristic pointers and connection state
+BLEServer *pServer = NULL;
+BLECharacteristic *pRxCharacteristic = NULL;
+BLECharacteristic *pTxCharacteristic = NULL;
+BLECharacteristic *pUpdateCharacteristic = NULL;
+bool deviceConnected = false;
+
+// OTA update variables
+bool otaInProgress = false;
+uint32_t otaFileSize = 0;
+uint32_t otaReceived = 0;
+int lastProgressPercent = -1;
+
+// Counter and timing variables
+int counter = 0;
+unsigned long previousMillis = 0;
+const long interval = 1000;
+
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    deviceConnected = true;
+    Serial.println("[BLE] Device connected.");
+  }
+
+  void onDisconnect(BLEServer* pServer) {
+    deviceConnected = false;
+    // Cancel OTA update on disconnect
+    if (otaInProgress) {
+      Serial.println("[OTA] Update cancelled.");
+      Update.end(false); // Abort the update process
+      otaInProgress = false;
+    }
+    // Restart advertising after disconnecting
+    pServer->getAdvertising()->start();
+    Serial.println("[BLE] Device disconnected. Re-advertising...");
+  }
+};
+
+class UartCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    uint8_t* data = pCharacteristic->getData();
+    size_t length = pCharacteristic->getLength();
+
+    if (length == 0) return;
+
+    // Handle regular UART input
+    Serial.print("[Console] ");
+    Serial.write(data, length);
+    Serial.println();
+  }
+};
+
+class UpdateCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    uint8_t* data = pCharacteristic->getData();
+    size_t length = pCharacteristic->getLength();
+
+    if (length == 0) return;
+
+    // Check for OTA start command "OPEN"
+    if (!otaInProgress && length == 4 &&
+        memcmp(data, "OPEN", 4) == 0) {
+      Serial.println("[OTA] Update started.");
+      otaInProgress = true;
+      otaFileSize = 0;
+      otaReceived = 0;
+      lastProgressPercent = -1;
+      return;
+    }
+
+    // Check for OTA cancel command "HALT" during an OTA update
+    if (otaInProgress && length == 4 &&
+        memcmp(data, "HALT", 4) == 0) {
+      Serial.println("[OTA] Update cancelled.");
+      Update.end(false); // Abort the update process
+      otaInProgress = false;
+      return;
+    }
+
+    if (otaInProgress) {
+      // Handle file size reception
+      if (otaFileSize == 0 && length == 4) {
+        memcpy(&otaFileSize, data, 4);
+        Serial.printf("[OTA] Update size: %u bytes.\n", otaFileSize);
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+          Serial.println("[OTA] ERROR: Unable to start update.");
+          otaInProgress = false;
+        }
+        return;
+      }
+
+      // Check for OTA end command "DONE"
+      if (length == 4 && memcmp(data, "DONE", 4) == 0) {
+        Serial.println("[OTA] Finalizing update.");
+
+        if (otaReceived != otaFileSize) {
+          Serial.printf("[OTA] ERROR: Size mismatch (%u/%u bytes).\n", otaReceived, otaFileSize);
+          Update.end(false); // Abort safely
+        } else if (Update.end(true) && Update.isFinished()) {
+          Serial.println("[OTA] Update successful.");
+          Serial.println("[OTA] Rebooting...");
+          ESP.restart();
+        } else {
+          Serial.println("[OTA] ERROR: Failed to finalize update.");
+          Update.printError(Serial);
+        }
+
+        otaInProgress = false;
+        return;
+      }
+
+      // Process binary data chunks
+      if (otaReceived < otaFileSize) {
+        size_t written = Update.write(data, length);
+        if (written > 0) {
+          otaReceived += written;
+          int progress = (otaReceived * 100) / otaFileSize;
+          // Print only if progress has advanced to a new integer value
+          if (progress != lastProgressPercent) {
+            lastProgressPercent = progress;
+            Serial.printf("[OTA] Progress: %d%%\n", progress);
+          }
+        }
+      }
+    }
+  }
+};
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println();
+  Serial.println();
+  Serial.println("========================================");
+  Serial.println("ESP32 OTA UPDATE APPLICATION STARTING");
+  Serial.println("========================================");
+  Serial.println();
+  Serial.println("[SETUP] Serial communication initialized.");
+  Serial.println("[SETUP] Baud rate: 115200");
+  Serial.println("[SETUP] Waiting 30 seconds for serial monitor to connect...");
+  Serial.flush();
+  
+  // 30 second delay with progress updates
+  for (int i = 30; i > 0; i--) {
+    delay(1000);
+    Serial.printf("[SETUP] Waiting... %d seconds remaining\n", i);
+    Serial.flush();
+  }
+  
+  Serial.println();
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] DELAY COMPLETE - CONTINUING SETUP");
+  Serial.println("[SETUP] ========================================");
+  Serial.println();
+  Serial.flush();
+
+  // Setup buzzer pin
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] CONFIGURING BUZZER");
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] Setting up buzzer pin...");
+  Serial.printf("[SETUP] Buzzer pin: %d\n", buzzerPin);
+  Serial.flush();
+  delay(500);
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW);
+  Serial.println("[SETUP] Buzzer pin configured as OUTPUT.");
+  Serial.println("[SETUP] Buzzer initialized to LOW state.");
+  Serial.flush();
+  delay(500);
+
+  // Test beep to confirm basic functionality
+  Serial.println("[SETUP] Testing buzzer...");
+  Serial.println("[SETUP] Performing single test beep...");
+  Serial.flush();
+  digitalWrite(buzzerPin, HIGH);
+  delay(50);
+  digitalWrite(buzzerPin, LOW);
+  Serial.println("[SETUP] Buzzer test complete.");
+  Serial.println("[SETUP] ========================================");
+  Serial.println();
+  Serial.flush();
+  delay(1000);
+
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] INITIALIZING BLE");
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] Initializing BLE device...");
+  Serial.println("[SETUP] Device name: 'Wible'");
+  Serial.flush();
+  BLEDevice::init("Wible");
+  Serial.println("[SETUP] BLE device initialized successfully.");
+  Serial.flush();
+  delay(500);
+  
+  Serial.println("[SETUP] Creating BLE server...");
+  Serial.flush();
+  pServer = BLEDevice::createServer();
+  if (pServer == NULL) {
+    Serial.println("[SETUP] ERROR: Failed to create BLE server!");
+    Serial.flush();
+    return;
+  }
+  Serial.println("[SETUP] BLE server created successfully.");
+  Serial.printf("[SETUP] Server pointer: %p\n", pServer);
+  Serial.flush();
+  delay(500);
+  
+  Serial.println("[SETUP] Setting server callbacks...");
+  Serial.flush();
+  pServer->setCallbacks(new MyServerCallbacks());
+  Serial.println("[SETUP] Server callbacks set successfully.");
+  Serial.flush();
+  delay(500);
+
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] CREATING UART SERVICE");
+  Serial.println("[SETUP] ========================================");
+  Serial.printf("[SETUP] UART Service UUID: %s\n", UART_SERVICE_UUID);
+  Serial.flush();
+  // Create UART Service
+  BLEService *pUartService = pServer->createService(UART_SERVICE_UUID);
+  if (pUartService == NULL) {
+    Serial.println("[SETUP] ERROR: Failed to create UART service!");
+    Serial.flush();
+    return;
+  }
+  Serial.println("[SETUP] UART service created successfully.");
+  Serial.flush();
+  delay(500);
+
+  Serial.println("[SETUP] Creating RX Characteristic (write_nr)...");
+  Serial.printf("[SETUP] RX Characteristic UUID: %s\n", RX_CHARACTERISTIC_UUID);
+  Serial.flush();
+  // Create RX Characteristic (write_nr)
+  pRxCharacteristic = pUartService->createCharacteristic(
+    RX_CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  if (pRxCharacteristic == NULL) {
+    Serial.println("[SETUP] ERROR: Failed to create RX characteristic!");
+    Serial.flush();
+    return;
+  }
+  Serial.println("[SETUP] RX characteristic created successfully.");
+  Serial.println("[SETUP] Setting RX characteristic callbacks...");
+  Serial.flush();
+  pRxCharacteristic->setCallbacks(new UartCallbacks());
+  Serial.println("[SETUP] RX characteristic callbacks set.");
+  Serial.flush();
+  delay(500);
+
+  Serial.println("[SETUP] Creating TX Characteristic (read, notify)...");
+  Serial.printf("[SETUP] TX Characteristic UUID: %s\n", TX_CHARACTERISTIC_UUID);
+  Serial.flush();
+  // Create TX Characteristic (read, notify)
+  pTxCharacteristic = pUartService->createCharacteristic(
+    TX_CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_READ |
+    BLECharacteristic::PROPERTY_NOTIFY
+  );
+  if (pTxCharacteristic == NULL) {
+    Serial.println("[SETUP] ERROR: Failed to create TX characteristic!");
+    Serial.flush();
+    return;
+  }
+  Serial.println("[SETUP] TX characteristic created successfully.");
+  Serial.println("[SETUP] Adding BLE2902 descriptor to TX characteristic...");
+  Serial.flush();
+  pTxCharacteristic->addDescriptor(new BLE2902());
+  Serial.println("[SETUP] BLE2902 descriptor added.");
+  Serial.flush();
+  delay(500);
+
+  Serial.println("[SETUP] Starting UART service...");
+  Serial.flush();
+  pUartService->start();
+  Serial.println("[SETUP] UART service started successfully.");
+  Serial.println("[SETUP] ========================================");
+  Serial.flush();
+  delay(500);
+
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] CREATING UPDATE SERVICE");
+  Serial.println("[SETUP] ========================================");
+  Serial.printf("[SETUP] Update Service UUID: %s\n", UPDATE_SERVICE_UUID);
+  Serial.flush();
+  // Create Update Service
+  BLEService *pUpdateService = pServer->createService(UPDATE_SERVICE_UUID);
+  if (pUpdateService == NULL) {
+    Serial.println("[SETUP] ERROR: Failed to create Update service!");
+    Serial.flush();
+    return;
+  }
+  Serial.println("[SETUP] Update service created successfully.");
+  Serial.flush();
+  delay(500);
+
+  Serial.println("[SETUP] Creating Update Characteristic (write_nr)...");
+  Serial.printf("[SETUP] Update Characteristic UUID: %s\n", UPDATE_CHARACTERISTIC_UUID);
+  Serial.flush();
+  // Create Update Characteristic (write_nr)
+  pUpdateCharacteristic = pUpdateService->createCharacteristic(
+    UPDATE_CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  if (pUpdateCharacteristic == NULL) {
+    Serial.println("[SETUP] ERROR: Failed to create Update characteristic!");
+    Serial.flush();
+    return;
+  }
+  Serial.println("[SETUP] Update characteristic created successfully.");
+  Serial.println("[SETUP] Setting Update characteristic callbacks...");
+  Serial.flush();
+  pUpdateCharacteristic->setCallbacks(new UpdateCallbacks());
+  Serial.println("[SETUP] Update characteristic callbacks set.");
+  Serial.flush();
+  delay(500);
+
+  Serial.println("[SETUP] Starting Update service...");
+  Serial.flush();
+  // Start both services
+  pUpdateService->start();
+  Serial.println("[SETUP] Update service started successfully.");
+  Serial.println("[SETUP] ========================================");
+  Serial.flush();
+  delay(500);
+
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] CONFIGURING BLE ADVERTISING");
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] Getting advertising object...");
+  Serial.flush();
+  // Start advertising with both service UUIDs
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  if (pAdvertising == NULL) {
+    Serial.println("[SETUP] ERROR: Failed to get advertising object!");
+    Serial.flush();
+    return;
+  }
+  Serial.println("[SETUP] Advertising object obtained.");
+  Serial.flush();
+  delay(500);
+  
+  Serial.println("[SETUP] Adding UART service UUID to advertising...");
+  Serial.flush();
+  pAdvertising->addServiceUUID(UART_SERVICE_UUID);
+  Serial.println("[SETUP] UART service UUID added.");
+  Serial.flush();
+  delay(500);
+  
+  Serial.println("[SETUP] Adding Update service UUID to advertising...");
+  Serial.flush();
+  pAdvertising->addServiceUUID(UPDATE_SERVICE_UUID);
+  Serial.println("[SETUP] Update service UUID added.");
+  Serial.flush();
+  delay(500);
+  
+  Serial.println("[SETUP] Configuring advertising parameters...");
+  Serial.flush();
+  pAdvertising->setScanResponse(true);
+  Serial.println("[SETUP] Scan response enabled.");
+  pAdvertising->setMinPreferred(0x06);
+  Serial.println("[SETUP] Min preferred interval set to 0x06.");
+  pAdvertising->setMinPreferred(0x12);
+  Serial.println("[SETUP] Min preferred interval set to 0x12.");
+  Serial.flush();
+  delay(500);
+  
+  Serial.println("[SETUP] Starting BLE advertising...");
+  Serial.flush();
+  BLEDevice::startAdvertising();
+  Serial.println("[SETUP] BLE advertising started successfully.");
+  Serial.flush();
+  delay(500);
+
+  Serial.println();
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] SETUP COMPLETE");
+  Serial.println("[SETUP] ========================================");
+  Serial.println("[SETUP] Device name: Wible");
+  Serial.print("[SETUP] MAC Address: ");
+  Serial.println(BLEDevice::getAddress().toString().c_str());
+  Serial.println("[SETUP] Device is now advertising and ready for connections.");
+  Serial.println("[SETUP] OTA update service is ready.");
+  Serial.println("[SETUP] UART service is ready.");
+  Serial.println("[SETUP] Starting main loop...");
+  Serial.println();
+  Serial.println("========================================");
+  Serial.println("SYSTEM READY - ENTERING MAIN LOOP");
+  Serial.println("========================================");
+  Serial.println();
+  Serial.flush();
+}
+
+void loop() {
+  static unsigned long lastBeepCycle = 0;
+  unsigned long currentMillis = millis();
+  
+  Serial.println("[LOOP] ========================================");
+  Serial.println("[LOOP] LOOP ITERATION");
+  Serial.println("[LOOP] ========================================");
+  Serial.printf("[LOOP] Current time: %lu ms\n", currentMillis);
+  Serial.printf("[LOOP] OTA in progress: %s\n", otaInProgress ? "YES" : "NO");
+  Serial.printf("[LOOP] Device connected: %s\n", deviceConnected ? "YES" : "NO");
+  Serial.flush();
+
+  if (!otaInProgress) {
+    // Check if it's time for a beep cycle (every 10 seconds)
+    if (currentMillis - lastBeepCycle >= 10000 || lastBeepCycle == 0) {
+      Serial.println("[LOOP] ========================================");
+      Serial.println("[LOOP] STARTING BEEP CYCLE");
+      Serial.println("[LOOP] ========================================");
+      Serial.printf("[LOOP] Will beep %d times\n", numBeeps);
+      Serial.printf("[LOOP] Beep duration: %d ms\n", beepDuration);
+      Serial.printf("[LOOP] Pause between beeps: %d ms\n", beepPause);
+      Serial.flush();
+      
+      for (int i = 0; i < numBeeps; i++) {
+        Serial.printf("[LOOP] Beep %d of %d\n", i + 1, numBeeps);
+        Serial.println("[LOOP] Activating buzzer...");
+        Serial.flush();
+        digitalWrite(buzzerPin, HIGH);
+        delay(beepDuration);
+        Serial.println("[LOOP] Deactivating buzzer...");
+        Serial.flush();
+        digitalWrite(buzzerPin, LOW);
+        
+        if (i < numBeeps - 1) {
+          Serial.printf("[LOOP] Pausing for %d ms before next beep...\n", beepPause);
+          Serial.flush();
+          delay(beepPause);
+        }
+      }
+      
+      Serial.println("[LOOP] ========================================");
+      Serial.println("[LOOP] BEEP CYCLE COMPLETE");
+      Serial.println("[LOOP] ========================================");
+      Serial.println("[LOOP] Waiting 10 seconds before next cycle...");
+      Serial.flush();
+      
+      lastBeepCycle = currentMillis;
+      
+      // Wait 10 seconds with progress updates
+      for (int i = 10; i > 0; i--) {
+        delay(1000);
+        Serial.printf("[LOOP] Waiting... %d seconds remaining\n", i);
+        Serial.flush();
+      }
+      
+      Serial.println("[LOOP] Ready for next beep cycle.");
+      Serial.println();
+      Serial.flush();
+    } else {
+      unsigned long timeUntilNextCycle = 10000 - (currentMillis - lastBeepCycle);
+      Serial.printf("[LOOP] Next beep cycle in %lu ms\n", timeUntilNextCycle);
+      Serial.flush();
+      delay(1000); // Small delay to prevent overwhelming serial output
+    }
+  } else {
+    Serial.println("[LOOP] OTA update in progress - beep cycle paused.");
+    Serial.printf("[LOOP] OTA progress: %u / %u bytes", otaReceived, otaFileSize);
+    if (otaFileSize > 0) {
+      Serial.printf(" (%.1f%%)", (otaReceived * 100.0) / otaFileSize);
+    }
+    Serial.println();
+    Serial.flush();
+    delay(2000); // Longer delay during OTA to reduce serial spam
+  }
+  
+  Serial.println("[LOOP] End of loop iteration.");
+  Serial.println();
+  Serial.flush();
+}
