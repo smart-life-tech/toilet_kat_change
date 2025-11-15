@@ -97,7 +97,7 @@ void heaterOff();
 void updateHeaterPID();
 float readM1Current();
 float readHeaterCurrent();
-void setM3Speed(bool enable);
+void setM3Speed(int speed);
 void checkAllMotorFaults();
 void LEDErrorCode(int errorCode);
 int getBatteryChargeLevel();
@@ -783,8 +783,8 @@ void mcp_setup()
     if (!mcp.begin_I2C(0x20, &myI2C))
     {
         Serial.println("Error initializing MCP23017!");
-        while (1)
-            ;
+        // while (1)
+        ;
     }
     else
     {
@@ -902,7 +902,7 @@ void server_setup(bool includeOTA = false)
 
     Serial.print("ESP32 MAC ADDRESS: ");
     // Outputs the MAC Address of the ESP32 Board
-    //Serial.println(BLEDevice::getAddress().toString());
+    // Serial.println(BLEDevice::getAddress().toString());
     Serial.println("Characteristic defined! Now your client can read it!");
 }
 
@@ -1507,12 +1507,14 @@ void handleOTAChunk(uint8_t *data, size_t length)
     if (!md5_initialized)
     {
         mbedtls_md5_init(&md5_ctx);
-        mbedtls_md5_starts(&md5_ctx);
+        // mbedtls_md5_starts(&md5_ctx);
+        mbedtls_md5_starts_ret(&md5_ctx);
+
         md5_initialized = true;
     }
 
     // Update MD5 hash
-    mbedtls_md5_update(&md5_ctx, data, length);
+    mbedtls_md5_update_ret(&md5_ctx, data, length);
 
     // Write chunk to OTA partition
     esp_err_t err = esp_ota_write(ota_handle, data, length);
@@ -1539,7 +1541,7 @@ void handleOTAChunk(uint8_t *data, size_t length)
     // Finalize MD5 if this is the last chunk (indicated by bytes_received >= firmware_size)
     if (firmware_size > 0 && bytes_received >= firmware_size)
     {
-        mbedtls_md5_finish(&md5_ctx, calculated_md5);
+        mbedtls_md5_finish_ret(&md5_ctx, calculated_md5);
         mbedtls_md5_free(&md5_ctx);
         md5_initialized = false;
         Serial.println("Firmware reception complete, validating...");
@@ -1627,12 +1629,10 @@ void setup()
 
     // Also send to BLE if available (will be sent after BLE is initialized)
     // Store in a buffer or send later after BLE setup
-
-    // Initialize NVS for OTA rollback
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
-        // NVS partition was truncated and needs to be erased
+        // Only erase if init fails
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
     }
@@ -3125,7 +3125,7 @@ void locateMotorPos()
                 }
                 motors.setM1Speed(0);
                 mechanismMotorRunning = false;
-                return;
+                // return;
             }
             delay(10);
         }
@@ -3157,7 +3157,7 @@ void locateMotorPos()
             }
             motors.setM1Speed(0);
             mechanismMotorRunning = false;
-            return;
+            // return;
         }
         delay(10);
     }
