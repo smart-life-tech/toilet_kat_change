@@ -806,13 +806,13 @@ void mcp_setup()
 // Function to write a value to a specific MCP23017 pin
 void mcp_digitalWrite(int pin, int value)
 {
-    mcp.digitalWrite(pin, value);
+   // mcp.digitalWrite(pin, value);
 }
 
 // Function to read from a specific MCP23017 pin
 int mcp_digitalRead(int pin)
 {
-    return mcp.digitalRead(pin);
+    return HIGH; //mcp.digitalRead(pin);
 }
 
 // Function to initialize the BLE Server
