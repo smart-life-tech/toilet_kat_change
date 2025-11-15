@@ -1,3 +1,4 @@
+bool dev = true; // Development mode flag
 #include <Arduino.h>
 #include <BLEServer.h>
 #include <BLEDevice.h>
@@ -806,13 +807,13 @@ void mcp_setup()
 // Function to write a value to a specific MCP23017 pin
 void mcp_digitalWrite(int pin, int value)
 {
-   // mcp.digitalWrite(pin, value);
+    // mcp.digitalWrite(pin, value);
 }
 
 // Function to read from a specific MCP23017 pin
 int mcp_digitalRead(int pin)
 {
-    return HIGH; //mcp.digitalRead(pin);
+    return HIGH; // mcp.digitalRead(pin);
 }
 
 // Function to initialize the BLE Server
@@ -1653,7 +1654,7 @@ void setup()
     Serial.println("checking boot failure done");
     mcp_setup(); // Initialize the MCP23017
     Serial.println("MCP23017 Initialized");
-    circleLeds();
+    // circleLeds();
     Serial.println("LED startup test complete");
 
     // Initialize hardware version first
@@ -1699,45 +1700,47 @@ void setup()
     // Update PID setpoint to match loaded K value
     setpoint = K;
 
-    pinMode(heaterPin, OUTPUT);
-    pinMode(buzzerPin, OUTPUT);
-    pinMode(microswitchClosePin, INPUT_PULLUP);
-    pinMode(microswitchOpenPin, INPUT_PULLUP);
+    if (!dev)
+    {
+        pinMode(heaterPin, OUTPUT);
+        pinMode(buzzerPin, OUTPUT);
+        pinMode(microswitchClosePin, INPUT_PULLUP);
+        pinMode(microswitchOpenPin, INPUT_PULLUP);
+        // Motor fault pins
+        pinMode(M1NFAULT_PIN, INPUT);
+        pinMode(M2NFAULT_PIN, INPUT);
+        pinMode(M3NFAULT_PIN, INPUT);
 
-    // Motor fault pins
-    pinMode(M1NFAULT_PIN, INPUT);
-    pinMode(M2NFAULT_PIN, INPUT);
-    pinMode(M3NFAULT_PIN, INPUT);
+        // Motor enable pins
+        pinMode(M1NEN_PIN, OUTPUT);
+        pinMode(M2NEN_PIN, OUTPUT);
+        pinMode(M3NEN_PIN, OUTPUT);
 
-    // Motor enable pins
-    pinMode(M1NEN_PIN, OUTPUT);
-    pinMode(M2NEN_PIN, OUTPUT);
-    pinMode(M3NEN_PIN, OUTPUT);
+        // Motor direction pins
+        pinMode(M1DIR_PIN, OUTPUT);
+        pinMode(M2DIR_PIN, OUTPUT);
+        pinMode(M3DIR_PIN, OUTPUT);
 
-    // Motor direction pins
-    pinMode(M1DIR_PIN, OUTPUT);
-    pinMode(M2DIR_PIN, OUTPUT);
-    pinMode(M3DIR_PIN, OUTPUT);
+        // Motor PWM pins
+        pinMode(M1PWM_PIN, OUTPUT);
+        pinMode(M2PWM_PIN, OUTPUT);
+        pinMode(M3PWM_PIN, OUTPUT);
 
-    // Motor PWM pins
-    pinMode(M1PWM_PIN, OUTPUT);
-    pinMode(M2PWM_PIN, OUTPUT);
-    pinMode(M3PWM_PIN, OUTPUT);
+        // Current monitoring pins
+        pinMode(m1CurrentPin, INPUT);
+        pinMode(heaterCurrentPin, INPUT);
 
-    // Current monitoring pins
-    pinMode(m1CurrentPin, INPUT);
-    pinMode(heaterCurrentPin, INPUT);
-
-    // Battery voltage monitoring pin
-    pinMode(batteryVoltagePin, INPUT);
-    pinMode(batteryTempPin, INPUT);
-
+        // Battery voltage monitoring pin
+        pinMode(batteryVoltagePin, INPUT);
+        pinMode(batteryTempPin, INPUT);
+    }
     // Test heater current detection
     testHeaterCurrent();
 
     motors.enableDrivers();
     motors3.enableDrivers(); // Enable M3 motor shield
-    locateMotorPos();
+    if (!dev)
+        locateMotorPos();
     myPID.SetMode(AUTOMATIC);
     myPID.SetOutputLimits(0, 255);
 }
@@ -1796,7 +1799,7 @@ void loop()
     {
         if (!is_device_connected)
         {
-            Serial.println("hi");
+            Serial.println("hi device is not connected to ble");
         }
         else
         {
