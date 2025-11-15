@@ -572,7 +572,7 @@ class update_characteristic_callbacks : public BLECharacteristicCallbacks
                             {
                                 SerialBLE_println("Rollback successful, rebooting...");
                                 delay(1000);
-                                esp_restart();
+                                // esp_restart();
                             }
                             return;
                         }
@@ -608,7 +608,7 @@ class update_characteristic_callbacks : public BLECharacteristicCallbacks
                         notifyUpdateProgress(100);
 
                         delay(1000);
-                        esp_restart();
+                        // esp_restart();
                     }
                     else
                     {
@@ -776,9 +776,10 @@ class characteristic_callbacks : public BLECharacteristicCallbacks
 // Function to initialize the MCP23017 for output and input
 void mcp_setup()
 {
-    // ✅ Use GPIO6 for SDA and GPIO7 for SCL
-    myI2C.begin(6, 7, 100000);
-
+    // Use GPIO6 for SDA and GPIO7 for SCL
+    Serial.println("init i2c ");
+    myI2C.begin(21, 22, 100000); // SDA=21, SCL=22
+    Serial.println("finished i2c ");
     // Init MCP23017 with custom I2C bus
     if (!mcp.begin_I2C(0x20, &myI2C))
     {
@@ -790,7 +791,7 @@ void mcp_setup()
     {
         Serial.println("MCP23017 Initialized Successfully.");
     }
-
+    Serial.println("MCP23017 Initialized Successfully.");
     // Setup button pins on expander
     mcp.pinMode(button1Pin, INPUT_PULLUP);
     mcp.pinMode(button2Pin, INPUT_PULLUP);
@@ -1332,31 +1333,32 @@ void checkBootFailure()
     }
 
     uint8_t boot_count = 0;
-    nvs_get_u8(nvs_handle, "boot_count", &boot_count);
+    nvs_set_u8(nvs_handle, "boot_count", boot_count);
+    if (nvs_get_u8(nvs_handle, "boot_count", &boot_count) != ESP_OK)
+    {
+        boot_count = 0; // initialize if not found
+    }
 
-    // If boot count is high, it means we've been rebooting repeatedly (boot failure)
+    // Increment boot count each boot
+    boot_count++;
+    nvs_set_u8(nvs_handle, "boot_count", boot_count);
+    nvs_commit(nvs_handle);
+
     if (boot_count > 3)
     {
         Serial.println("WARNING: High boot count detected, may need rollback");
         rollback_required = true;
 
-        // Reset boot count
+        // Reset boot count before rollback attempt
         nvs_set_u8(nvs_handle, "boot_count", 0);
         nvs_commit(nvs_handle);
 
-        // Attempt rollback
         if (rollbackOTAUpdate())
         {
             Serial.println("Rollback successful, rebooting...");
             delay(1000);
-            esp_restart();
+            // esp_restart();
         }
-    }
-    else
-    {
-        // Successful boot, reset boot count
-        nvs_set_u8(nvs_handle, "boot_count", 0);
-        nvs_commit(nvs_handle);
     }
 
     nvs_close(nvs_handle);
@@ -1632,22 +1634,30 @@ void setup()
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
-        // Only erase if init fails
+        Serial.println("NVS init failed, erasing...");
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
     }
-    ESP_ERROR_CHECK(err);
+    if (err != ESP_OK)
+    {
+        Serial.printf("NVS init error: %s\n", esp_err_to_name(err));
+    }
+    else
+    {
+        Serial.println("NVS initialized successfully");
+    }
 
     // Check for boot failures and rollback if needed
+    Serial.println("checking boot failure");
     checkBootFailure();
-
+    Serial.println("checking boot failure done");
     mcp_setup(); // Initialize the MCP23017
     Serial.println("MCP23017 Initialized");
     circleLeds();
     Serial.println("LED startup test complete");
 
     // Initialize hardware version first
-    // initializeHardwareVersion();
+    initializeHardwareVersion();
 
     // Record BLE startup time  // Record BLE startup time
     bleStartupTime = millis();
