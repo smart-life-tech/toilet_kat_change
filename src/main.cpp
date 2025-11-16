@@ -908,7 +908,7 @@ void server_setup(bool includeOTA = false)
         UPDATE_CHARACTERISTIC_UUID,
         BLECharacteristic::PROPERTY_READ |
             BLECharacteristic::PROPERTY_WRITE);
-    
+
     // Set callback for OTA update commands
     update_characteristic->setCallbacks(new update_characteristic_callbacks());
     update_characteristic->setValue("READY");
@@ -919,7 +919,7 @@ void server_setup(bool includeOTA = false)
 
     // Set update_service to NULL since we're not using a separate OTA service anymore
     update_service = NULL;
-    
+
     // Starts broadcasting so any devices can now find it and connect
     BLEAdvertising *blue_advert = blue_server->getAdvertising();
     blue_advert->addServiceUUID(SERVICE_UUID);
@@ -1222,7 +1222,7 @@ bool prepareForOTA()
         SerialBLE_println("Update preparation blocked - flush in progress");
         return false;
     }
-    
+
     if (updateInProgress)
     {
         Serial.println("ERROR: Update preparation blocked - previous update still in progress");
@@ -1271,21 +1271,23 @@ bool prepareForOTA()
 
     // Stop all operations
     stopEverything();
-
-    // Disable heater and motors
-    heaterOff();
-    motors.setM1Speed(0);
-    motors.setM2Speed(0);
-    setM3Speed(0);
-
+    if (!dev)
+    {
+        // Disable heater and motors
+        heaterOff();
+        motors.setM1Speed(0);
+        motors.setM2Speed(0);
+        setM3Speed(0);
+    }
     // Reset OTA state
     resetOTAState();
     otaState = OTA_PREPARING;
     updateInProgress = true;
-
-    // Indicate update mode with LEDs
-    flashLeds(); // Flash LEDs to indicate update mode
-
+    if (!dev)
+    {
+        // Indicate update mode with LEDs
+        flashLeds(); // Flash LEDs to indicate update mode
+    }
     SerialBLE_println("Device prepared for OTA update");
     Serial.printf("Current partition: %s, Update partition: %s\n",
                   running_partition->label, update_partition->label);
@@ -1672,7 +1674,7 @@ void setup()
 {
     Serial.begin(115200); // Increased baud rate for faster output
     delay(4000);          // Longer delay to ensure Serial is ready
-    Serial.println("\n\n=== SETUP STARTING ===");
+    Serial.println("\n\n=== SETUP STARTING NOW ===");
     Serial.printf("Free heap at startup: %d bytes\n", ESP.getFreeHeap());
     Serial.printf("Largest free block: %d bytes\n", ESP.getMaxAllocHeap());
     Serial.println("Beginning Setup");
@@ -1710,7 +1712,7 @@ void setup()
     // Record BLE startup time  // Record BLE startup time
     bleStartupTime = millis();
 
-    Serial.println("=== MEMORY BEFORE BLE SERVER SETUP ===");
+    Serial.println("=== MEMORY CALC BEFORE BLE SERVER SETUP ===");
     Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
     Serial.printf("Largest free block: %d bytes\n", ESP.getMaxAllocHeap());
     Serial.printf("Min free heap ever: %d bytes\n", ESP.getMinFreeHeap());
@@ -2724,7 +2726,7 @@ void enableOTA()
     resetOTAState();
     updateInProgress = false;
     isFlushing = false; // Ensure no flush operation is blocking
-    
+
     otaEnabled = true;
     otaWindowStartTime = millis();
     slowCircleLedIndex = 0;
@@ -2735,7 +2737,7 @@ void enableOTA()
     {
         mcp_digitalWrite(ledPins[i], LOW);
     }
-    
+
     Serial.println("OTA state reset complete - ready for update");
     sendSerialToBLE("OTA state reset - ready for update");
 }
@@ -3009,10 +3011,13 @@ void stopEverything()
 {
 
     SerialBLE_println("stop everything");
-    motors.setM2Speed(0);
-    motors.setM1Speed(0);
-    setM3Speed(0); // Stop M3 motor
-    heaterOff();
+    if (!dev)
+    {
+        motors.setM2Speed(0);
+        motors.setM1Speed(0);
+        setM3Speed(0); // Stop M3 motor
+        heaterOff();
+    }
     flushStep = 12;
     isFlushing = false;
 }

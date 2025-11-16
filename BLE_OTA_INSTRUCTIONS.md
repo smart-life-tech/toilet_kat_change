@@ -66,8 +66,3 @@ PY
 - BLE MTU and chunk size: the script uses 400 bytes per chunk by default; if you encounter write failures lower this to ~200.
 - If the firmware is larger than the OTA partition the device may reject the update — the script prints firmware size and warns.
 
-What I added
-- `BLE_OTA_INSTRUCTIONS.md` — this file (this guide) explaining how to build and flash over BLE.
-
-Next steps
-- I can run a PlatformIO build here to verify compilation, or run the Python OTA script (requires a BLE adapter and the device in OTA mode). Which should I do next?

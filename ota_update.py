@@ -31,7 +31,7 @@ CHARACTERISTIC_UUID = "c327b077-560f-46a1-8f35-b4ab0332fea0"
 SERIAL_CHARACTERISTIC_UUID = "c327b077-560f-46a1-8f35-b4ab0332fea1"
 
 # BLE MTU is typically 20-512 bytes, we'll use 400 bytes per chunk for safety
-CHUNK_SIZE = 400
+CHUNK_SIZE = 100
 
 
 class OTAUpdater:
@@ -158,33 +158,58 @@ class OTAUpdater:
             # Version check is informational; don't fail the update if it errors
             return "UNKNOWN"
     
-    async def prepare_update(self) -> bool:
-        """Prepare device for OTA update"""
+    async def prepare_update(self, max_retries: int = 3) -> bool:
+        """Prepare device for OTA update with retry logic"""
         if not self.connected:
             print("Not connected to device")
             return False
         
-        try:
-            print("Preparing device for update...")
-            await self.client.write_gatt_char(UPDATE_CHARACTERISTIC_UUID, b"PREPARE_UPDATE")
-            await asyncio.sleep(1.0)
-            
-            # Read response
-            response = await self.client.read_gatt_char(UPDATE_CHARACTERISTIC_UUID)
-            response_str = response.decode('utf-8')
-            
-            if "UPDATE_PREPARED" in response_str:
-                print("Device prepared for update")
-                return True
-            elif "UPDATE_BLOCKED" in response_str:
-                print("ERROR: Update preparation blocked (device may be busy)")
-                return False
-            else:
-                print(f"Unexpected response: {response_str}")
-                return False
-        except Exception as e:
-            print(f"Failed to prepare update: {e}")
-            return False
+        for attempt in range(1, max_retries + 1):
+            try:
+                if attempt > 1:
+                    print(f"Retry attempt {attempt}/{max_retries}...")
+                else:
+                    print("Preparing device for update...")
+                
+                await self.client.write_gatt_char(UPDATE_CHARACTERISTIC_UUID, b"PREPARE_UPDATE")
+                await asyncio.sleep(1.5)  # Increased wait time for device to process
+                
+                # Read response
+                response = await self.client.read_gatt_char(UPDATE_CHARACTERISTIC_UUID)
+                response_str = response.decode('utf-8')
+                
+                if "UPDATE_PREPARED" in response_str:
+                    print("Device prepared for update")
+                    return True
+                elif "UPDATE_BLOCKED" in response_str:
+                    if attempt < max_retries:
+                        print(f"Update preparation blocked (attempt {attempt}/{max_retries})")
+                        print(f"Device may be busy - waiting 3 seconds before retry...")
+                        await asyncio.sleep(3.0)  # Wait before retry
+                    else:
+                        print("ERROR: Update preparation blocked (device may be busy)")
+                        print("\nTroubleshooting suggestions:")
+                        print("  1. Ensure no flush operation is running on the device")
+                        print("  2. Wait a few seconds and try again")
+                        print("  3. Restart the ESP32 device and retry")
+                        print("  4. Check device serial output for detailed error messages")
+                        return False
+                else:
+                    print(f"Unexpected response: {response_str}")
+                    if attempt < max_retries:
+                        print(f"Retrying in 2 seconds...")
+                        await asyncio.sleep(2.0)
+                    else:
+                        return False
+            except Exception as e:
+                print(f"Failed to prepare update: {e}")
+                if attempt < max_retries:
+                    print(f"Retrying in 2 seconds...")
+                    await asyncio.sleep(2.0)
+                else:
+                    return False
+        
+        return False
     
     async def start_update(self) -> bool:
         """Start OTA update process"""
@@ -251,7 +276,7 @@ class OTAUpdater:
                     print(f"Progress: {progress}% ({chunks_sent}/{total_chunks} chunks)")
                 
                 # Small delay to prevent overwhelming BLE
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.01)
             
             # Send MD5 hash after all chunks
             print("Sending MD5 hash...")
@@ -357,8 +382,9 @@ class OTAUpdater:
             print("Warning: could not request OTA enable via BLE characteristic")
             return False
 
-        # Give device time to process
-        await asyncio.sleep(1.5)
+        # Give device time to process and reset OTA state
+        print("Waiting for device to reset OTA state...")
+        await asyncio.sleep(4.0)  # Increased from 1.5s to 4.0s to allow full state reset
 
         # Check if update characteristic is visible on current connection
         try:
@@ -526,4 +552,3 @@ if __name__ == "__main__":
     # Run the update
     exit_code = asyncio.run(main())
     sys.exit(exit_code)
-
