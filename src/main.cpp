@@ -1,4 +1,4 @@
-bool dev = true; // Development mode flag
+bool dev = true; // Development mode flag when testing on your s3 use false
 #include <Arduino.h>
 #include <BLEServer.h>
 #include <BLEDevice.h>
@@ -12,7 +12,7 @@ bool dev = true; // Development mode flag
 #include <nvs_flash.h>               // Include NVS for rollback state storage
 #include <esp_system.h>              // Include for reboot functionality
 #include <mbedtls/md5.h>             // Include for MD5 validation
-
+bool bleprint = false;               // Flag to control BLE printing
 // Pin and component definitions
 const int heaterPin = 17; // GPIO17 (HEATER)
 
@@ -779,7 +779,10 @@ void mcp_setup()
 {
     // Use GPIO6 for SDA and GPIO7 for SCL
     Serial.println("init i2c ");
-    myI2C.begin(21, 22, 100000); // SDA=21, SCL=22
+    if (!dev)
+        myI2C.begin(6, 7, 100000); // SDA=6, SCL=7
+    else
+        myI2C.begin(21, 22, 100000); // SDA=21, SCL=22
     Serial.println("finished i2c ");
     // Init MCP23017 with custom I2C bus
     if (!mcp.begin_I2C(0x20, &myI2C))
@@ -807,13 +810,17 @@ void mcp_setup()
 // Function to write a value to a specific MCP23017 pin
 void mcp_digitalWrite(int pin, int value)
 {
-    // mcp.digitalWrite(pin, value);
+    if (!dev)
+        mcp.digitalWrite(pin, value);
 }
 
 // Function to read from a specific MCP23017 pin
 int mcp_digitalRead(int pin)
 {
-    return HIGH; // mcp.digitalRead(pin);
+    if (!dev)
+        return mcp.digitalRead(pin);
+    else
+        return HIGH;
 }
 
 // Function to initialize the BLE Server
@@ -1510,14 +1517,20 @@ void handleOTAChunk(uint8_t *data, size_t length)
     if (!md5_initialized)
     {
         mbedtls_md5_init(&md5_ctx);
-        // mbedtls_md5_starts(&md5_ctx);
+#ifdef dev
+        mbedtls_md5_starts(&md5_ctx);
+#else
         mbedtls_md5_starts_ret(&md5_ctx);
+#endif
 
         md5_initialized = true;
     }
 
     // Update MD5 hash
-    mbedtls_md5_update_ret(&md5_ctx, data, length);
+    if (!dev)
+        mbedtls_md5_update(&md5_ctx, data, length);
+    else
+        mbedtls_md5_update_ret(&md5_ctx, data, length);
 
     // Write chunk to OTA partition
     esp_err_t err = esp_ota_write(ota_handle, data, length);
@@ -1544,7 +1557,10 @@ void handleOTAChunk(uint8_t *data, size_t length)
     // Finalize MD5 if this is the last chunk (indicated by bytes_received >= firmware_size)
     if (firmware_size > 0 && bytes_received >= firmware_size)
     {
-        mbedtls_md5_finish_ret(&md5_ctx, calculated_md5);
+        if (!dev)
+            mbedtls_md5_finish(&md5_ctx, calculated_md5);
+        else
+            mbedtls_md5_finish_ret(&md5_ctx, calculated_md5);
         mbedtls_md5_free(&md5_ctx);
         md5_initialized = false;
         Serial.println("Firmware reception complete, validating...");
@@ -1624,7 +1640,7 @@ void testHeaterCurrent()
 void setup()
 {
     Serial.begin(115200); // Increased baud rate for faster output
-    delay(500);           // Longer delay to ensure Serial is ready
+    delay(7000);          // Longer delay to ensure Serial is ready
     Serial.println("\n\n=== SETUP STARTING ===");
     Serial.printf("Free heap at startup: %d bytes\n", ESP.getFreeHeap());
     Serial.printf("Largest free block: %d bytes\n", ESP.getMaxAllocHeap());
@@ -1668,7 +1684,7 @@ void setup()
     Serial.printf("Largest free block: %d bytes\n", ESP.getMaxAllocHeap());
     Serial.printf("Min free heap ever: %d bytes\n", ESP.getMinFreeHeap());
 
-    server_setup(false); // Initialize the Bluetooth Low Energy Server without OTA
+    server_setup(true); // Initialize the Bluetooth Low Energy Server without OTA
 
     Serial.println("=== MEMORY AFTER BLE SERVER SETUP ===");
     Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
@@ -1799,11 +1815,16 @@ void loop()
     {
         if (!is_device_connected)
         {
-            Serial.println("hi device is not connected to ble");
+            if (bleprint)
+            {
+                Serial.println("hi device is not connected to ble");
+                bleprint = false;
+            }
         }
         else
         {
             // Send periodic status when connected
+            bleprint = true;
             static unsigned long lastStatusPrint = 0;
             if (millis() - lastStatusPrint > 5000)
             { // Every 5 seconds
