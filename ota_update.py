@@ -27,6 +27,7 @@ UPDATE_SERVICE_UUID = "5636340f-afc7-47b1-b0a8-15bcb9d7d29a6"
 UPDATE_CHARACTERISTIC_UUID = "c327b077-560f-46a1-8f35-b4ab0332fea3"
 VERSION_CHARACTERISTIC_UUID = "c327b077-560f-46a1-8f35-b4ab0332fea2"
 DEVICE_NAME = "ESP32 Toilet"
+CHARACTERISTIC_UUID = "c327b077-560f-46a1-8f35-b4ab0332fea0"
 
 # BLE MTU is typically 20-512 bytes, we'll use 400 bytes per chunk for safety
 CHUNK_SIZE = 400
@@ -71,6 +72,8 @@ class OTAUpdater:
         try:
             self.client = BleakClient(address)
             await self.client.connect()
+            # store address for potential reconnects
+            self.address = address
             self.connected = True
             print(f"Connected to {DEVICE_NAME} at {address}")
             
@@ -284,7 +287,24 @@ class OTAUpdater:
             print("Calculating MD5 hash...")
             md5_hash = self.calculate_md5(firmware_data)
             print(f"MD5 hash: {md5_hash}")
-            
+            # Request device to enter OTA mode (write to main characteristic)
+            print("Requesting device to enter OTA mode via main characteristic...")
+            try:
+                await self.client.write_gatt_char(CHARACTERISTIC_UUID, b"ENABLE_OTA")
+                await asyncio.sleep(1.0)
+            except Exception as e:
+                print(f"Warning: could not request OTA enable: {e}")
+
+            # After requesting OTA mode, reconnect to refresh services if necessary
+            try:
+                await self.disconnect()
+                await asyncio.sleep(0.5)
+                if not await self.connect(self.address):
+                    print("ERROR: Failed to reconnect after requesting OTA mode")
+                    return False
+            except Exception:
+                pass
+
             # Check version
             await self.check_version()
             

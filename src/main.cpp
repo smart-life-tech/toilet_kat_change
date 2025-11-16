@@ -676,6 +676,18 @@ class characteristic_callbacks : public BLECharacteristicCallbacks
                 unsigned char *message = pCharacteristic->getData();
                 Serial.printf("Immediate parameter update received, length: %d\n", message_length);
 
+                // Allow remote clients to request OTA mode via BLE write
+                String cmd = String((char *)message);
+                cmd.trim();
+                if (cmd == "ENABLE_OTA")
+                {
+                    Serial.println("Received ENABLE_OTA command via BLE");
+                    sendSerialToBLE("Received ENABLE_OTA command via BLE");
+                    enableOTA();
+                    pCharacteristic->setValue("ENABLE_OTA_ACK");
+                    return;
+                }
+
                 // Parse and apply parameters immediately
                 char *parameters_string = strtok((char *)message, ",");
                 float parameters_list[100];
