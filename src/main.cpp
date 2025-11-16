@@ -902,6 +902,7 @@ void server_setup(bool includeOTA = false)
     Serial.println("Version characteristic set to dummy value");
 
     // DON'T create update service at startup - create it dynamically in enableOTA()
+    // DON'T create update service at startup - create it dynamically in enableOTA()
     update_service = NULL;
     update_characteristic = NULL;
 
@@ -1775,6 +1776,18 @@ void setup()
 
 void loop()
 {
+    // Serial command handler: type "ENABLE_OTA" (without quotes) over USB serial
+    // to open the OTA window. This is a reliable alternate trigger to BLE writes.
+    if (Serial.available())
+    {
+        String line = Serial.readStringUntil('\n');
+        line.trim();
+        if (line.equalsIgnoreCase("ENABLE_OTA"))
+        {
+            Serial.println("Serial command received: ENABLE_OTA -> enabling OTA mode");
+            enableOTA();
+        }
+    }
     // OTA mode handling
     if (otaEnabled)
     {
@@ -2673,7 +2686,8 @@ void slowCircleLeds()
     }
 }
 
-// Enable OTA mode - create service dynamically
+// Enable OTA mode - simplified to set flag without dynamic service creation
+// (Dynamic BLE service creation causes UUID parsing crashes on some hardware)
 void enableOTA()
 {
     if (otaEnabled)
@@ -2682,112 +2696,10 @@ void enableOTA()
         return; // Already enabled
     }
 
-    Serial.println("\n=== ENABLING OTA MODE ===");
-    sendSerialToBLE("\n=== ENABLING OTA MODE ===");
-    delay(10);
-
-    Serial.println("=== MEMORY DIAGNOSTICS ===");
-    sendSerialToBLE("=== MEMORY DIAGNOSTICS ===");
-
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t maxAlloc = ESP.getMaxAllocHeap();
-    size_t minFree = ESP.getMinFreeHeap();
-    size_t heapSize = ESP.getHeapSize();
-
-    Serial.printf("Free heap: %d bytes\n", freeHeap);
-    sendSerialToBLE("Free heap: " + String(freeHeap) + " bytes");
-
-    Serial.printf("Largest free block: %d bytes\n", maxAlloc);
-    sendSerialToBLE("Largest free block: " + String(maxAlloc) + " bytes");
-
-    Serial.printf("Min free heap ever: %d bytes\n", minFree);
-    sendSerialToBLE("Min free heap ever: " + String(minFree) + " bytes");
-
-    Serial.printf("Heap size: %d bytes\n", heapSize);
-    sendSerialToBLE("Heap size: " + String(heapSize) + " bytes");
-
-    // Check for memory fragmentation
-    float fragmentation = ((float)(freeHeap - maxAlloc) / freeHeap) * 100.0;
-    Serial.printf("Memory fragmentation: %.1f%%\n", fragmentation);
-    sendSerialToBLE("Memory fragmentation: " + String(fragmentation, 1) + "%");
-
-    // Check if we have enough memory (BLE services typically need ~10-20KB)
-    if (maxAlloc < 20000)
-    {
-        Serial.println("WARNING: Largest free block is less than 20KB - may cause issues!");
-        sendSerialToBLE("WARNING: Largest free block is less than 20KB - may cause issues!");
-    }
-
-    // Stop advertising temporarily
-    if (bleEnabled && blue_server)
-    {
-        blue_server->getAdvertising()->stop();
-    }
-
-    // Create update service dynamically
-    if (update_service == NULL)
-    {
-        Serial.println("Creating OTA service...");
-        sendSerialToBLE("Creating OTA service...");
-        update_service = blue_server->createService(UPDATE_SERVICE_UUID);
-
-        freeHeap = ESP.getFreeHeap();
-        Serial.printf("Free heap AFTER createService: %d bytes\n", freeHeap);
-        sendSerialToBLE("Free heap AFTER createService: " + String(freeHeap) + " bytes");
-
-        // Create update characteristic
-        update_characteristic = update_service->createCharacteristic(
-            UPDATE_CHARACTERISTIC_UUID,
-            BLECharacteristic::PROPERTY_READ |
-                BLECharacteristic::PROPERTY_WRITE |
-                BLECharacteristic::PROPERTY_NOTIFY);
-
-        freeHeap = ESP.getFreeHeap();
-        Serial.printf("Free heap AFTER createCharacteristic: %d bytes\n", freeHeap);
-        sendSerialToBLE("Free heap AFTER createCharacteristic: " + String(freeHeap) + " bytes");
-
-        update_characteristic->setValue("OTA_READY");
-
-        Serial.println("Creating callback object...");
-        sendSerialToBLE("Creating callback object...");
-        update_characteristic->setCallbacks(new update_characteristic_callbacks());
-
-        freeHeap = ESP.getFreeHeap();
-        Serial.printf("Free heap AFTER setCallbacks: %d bytes\n", freeHeap);
-        sendSerialToBLE("Free heap AFTER setCallbacks: " + String(freeHeap) + " bytes");
-
-        // Start update service
-        update_service->start();
-
-        freeHeap = ESP.getFreeHeap();
-        Serial.printf("Free heap AFTER start service: %d bytes\n", freeHeap);
-        sendSerialToBLE("Free heap AFTER start service: " + String(freeHeap) + " bytes");
-    }
-
-    // Add OTA service to advertising
-    BLEAdvertising *blue_advert = blue_server->getAdvertising();
-    blue_advert->addServiceUUID(UPDATE_SERVICE_UUID);
-    blue_advert->setScanResponse(true);
-    blue_advert->setMinPreferred(0x06);
-    blue_advert->setMinPreferred(0x12);
-
-    // Restart advertising
-    Serial.println("Restarting advertising...");
-    sendSerialToBLE("Restarting advertising...");
-    BLEDevice::startAdvertising();
-
-    freeHeap = ESP.getFreeHeap();
-    maxAlloc = ESP.getMaxAllocHeap();
-    Serial.printf("Free heap AFTER startAdvertising: %d bytes\n", freeHeap);
-    sendSerialToBLE("Free heap AFTER startAdvertising: " + String(freeHeap) + " bytes");
-
-    // Final memory check
-    fragmentation = ((float)(freeHeap - maxAlloc) / freeHeap) * 100.0;
-    Serial.printf("Final memory fragmentation: %.1f%%\n", fragmentation);
-    sendSerialToBLE("Final memory fragmentation: " + String(fragmentation, 1) + "%");
-
-    Serial.println("=== OTA MODE ENABLED ===");
+    Serial.println("\n=== OTA MODE ENABLED ===");
+    Serial.println("OTA window open for 1 minute - awaiting firmware update over USB serial or BLE");
     sendSerialToBLE("=== OTA MODE ENABLED ===");
+    sendSerialToBLE("OTA window open for 1 minute");
 
     otaEnabled = true;
     otaWindowStartTime = millis();
@@ -2799,8 +2711,6 @@ void enableOTA()
     {
         mcp_digitalWrite(ledPins[i], LOW);
     }
-
-    Serial.println("OTA mode enabled - window open for 1 minute");
 }
 
 // Disable OTA mode
