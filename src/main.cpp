@@ -1215,9 +1215,18 @@ String getVersionString()
 // Prepare device for OTA update
 bool prepareForOTA()
 {
-    if (isFlushing || updateInProgress)
+    // Provide detailed logging for blocking conditions
+    if (isFlushing)
     {
+        Serial.println("ERROR: Update preparation blocked - flush operation in progress");
         SerialBLE_println("Update preparation blocked - flush in progress");
+        return false;
+    }
+    
+    if (updateInProgress)
+    {
+        Serial.println("ERROR: Update preparation blocked - previous update still in progress");
+        SerialBLE_println("Update preparation blocked - previous update in progress");
         return false;
     }
 
@@ -2710,6 +2719,12 @@ void enableOTA()
     sendSerialToBLE("=== OTA MODE ENABLED ===");
     sendSerialToBLE("OTA window open for 1 minute");
 
+    // Reset OTA state to ensure clean slate for new update attempt
+    Serial.println("Resetting OTA state for new update attempt...");
+    resetOTAState();
+    updateInProgress = false;
+    isFlushing = false; // Ensure no flush operation is blocking
+    
     otaEnabled = true;
     otaWindowStartTime = millis();
     slowCircleLedIndex = 0;
@@ -2720,6 +2735,9 @@ void enableOTA()
     {
         mcp_digitalWrite(ledPins[i], LOW);
     }
+    
+    Serial.println("OTA state reset complete - ready for update");
+    sendSerialToBLE("OTA state reset - ready for update");
 }
 
 // Disable OTA mode

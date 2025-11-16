@@ -146,12 +146,17 @@ class OTAUpdater:
             
             # Read version from version characteristic
             version_data = await self.client.read_gatt_char(VERSION_CHARACTERISTIC_UUID)
-            version_str = version_data.decode('utf-8')
+            try:
+                version_str = version_data.decode('utf-8')
+            except UnicodeDecodeError:
+                # If version contains non-UTF-8 data, try with errors='replace'
+                version_str = version_data.decode('utf-8', errors='replace')
             print(f"Current firmware version: {version_str}")
             return version_str
         except Exception as e:
             print(f"Failed to check version: {e}")
-            return None
+            # Version check is informational; don't fail the update if it errors
+            return "UNKNOWN"
     
     async def prepare_update(self) -> bool:
         """Prepare device for OTA update"""
@@ -297,87 +302,89 @@ class OTAUpdater:
     
     async def update_firmware(self, firmware_path: str) -> bool:
         """Complete OTA update process"""
+
+        # Read firmware file first
         try:
-            # Read firmware file
             print(f"Reading firmware file: {firmware_path}")
             with open(firmware_path, 'rb') as f:
                 firmware_data = f.read()
-            
-            firmware_size = len(firmware_data)
-            print(f"Firmware size: {firmware_size} bytes")
-            
-            # Check firmware size against OTA partition size (0x1C0000 = 1,835,008 bytes)
-            MAX_OTA_PARTITION_SIZE = 0x1C0000  # 1.75 MB per partition
-            if firmware_size > MAX_OTA_PARTITION_SIZE:
-                print(f"WARNING: Firmware size ({firmware_size} bytes) exceeds OTA partition size ({MAX_OTA_PARTITION_SIZE} bytes)")
-                print("Update may fail if firmware is too large!")
-            else:
-                print(f"Firmware size OK: {firmware_size / 1024 / 1024:.2f} MB (max: {MAX_OTA_PARTITION_SIZE / 1024 / 1024:.2f} MB)")
-            
-            # Calculate MD5 hash
-            print("Calculating MD5 hash...")
-            md5_hash = self.calculate_md5(firmware_data)
-            print(f"MD5 hash: {md5_hash}")
-            # Request device to enter OTA mode (write to main characteristic)
-            print("Requesting device to enter OTA mode via main characteristic...")
-            # Attempt to write ENABLE_OTA using several strategies to work around
-            # Windows BLE stack restrictions (try without response and with response)
-            wrote_enable = False
-            # Ensure we're still connected; different bleak versions expose connection
-            # state as property or coroutine, handle both.
-            connected_state = False
-            try:
-                connected_state = bool(self.client.is_connected)
-            except Exception:
-                try:
-                    connected_state = bool(await self.client.is_connected())
-                except Exception:
-                    connected_state = False
+        except FileNotFoundError:
+            print(f"ERROR: Firmware file not found: {firmware_path}")
+            return False
+        except Exception as e:
+            print(f"ERROR: Could not read firmware file: {e}")
+            return False
 
-            if not connected_state:
-                print("Client not connected before ENABLE_OTA write; attempting reconnect...")
-                try:
-                    await self.client.connect()
-                    self.connected = True
-                    await asyncio.sleep(0.5)
-                except Exception as e:
-                    print(f"Reconnect failed: {e}")
+        firmware_size = len(firmware_data)
+        print(f"Firmware size: {firmware_size} bytes")
+        MAX_OTA_PARTITION_SIZE = 0x1C0000
+        if firmware_size > MAX_OTA_PARTITION_SIZE:
+            print(f"WARNING: Firmware size ({firmware_size} bytes) exceeds OTA partition size ({MAX_OTA_PARTITION_SIZE} bytes)")
+        else:
+            print(f"Firmware size OK: {firmware_size / 1024 / 1024:.2f} MB (max: {MAX_OTA_PARTITION_SIZE / 1024 / 1024:.2f} MB)")
 
+        print("Calculating MD5 hash...")
+        md5_hash = self.calculate_md5(firmware_data)
+        print(f"MD5 hash: {md5_hash}")
+
+        # Request device to enter OTA mode
+        print("Requesting device to enter OTA mode via main characteristic...")
+        wrote_enable = False
+        # Try different write modes
+        try:
+            await self.log_services()
+        except Exception:
+            pass
+
+        try:
+            print("Attempting ENABLE_OTA (with response)")
+            await self.client.write_gatt_char(CHARACTERISTIC_UUID, b"ENABLE_OTA", response=True)
+            wrote_enable = True
+        except Exception:
             try:
-                await self.log_services()
-                # Try write with response first (more likely to be accepted on Windows stacks)
-                print("Attempting ENABLE_OTA (with response)")
-                await self.client.write_gatt_char(CHARACTERISTIC_UUID, b"ENABLE_OTA", response=True)
+                print("Attempting ENABLE_OTA (without response)")
+                await self.client.write_gatt_char(CHARACTERISTIC_UUID, b"ENABLE_OTA", response=False)
                 wrote_enable = True
-            except Exception as e1:
-                print(f"ENABLE_OTA with response failed: {e1}")
-                try:
-                    print("Attempting ENABLE_OTA (without response)")
-                    await self.client.write_gatt_char(CHARACTERISTIC_UUID, b"ENABLE_OTA", response=False)
-                    wrote_enable = True
-                except Exception as e2:
-                    print(f"ENABLE_OTA without response failed: {e2}")
-
-            # As a last resort, try writing to the serial characteristic if available
-            if not wrote_enable:
+            except Exception:
                 try:
                     print("Attempting ENABLE_OTA on serial characteristic as fallback")
                     await self.client.write_gatt_char(SERIAL_CHARACTERISTIC_UUID, b"ENABLE_OTA", response=False)
                     wrote_enable = True
-                except Exception as e3:
-                    print(f"Fallback write failed: {e3}")
+                except Exception as e:
+                    print(f"Fallback write failed: {e}")
 
-            if not wrote_enable:
-                print("Warning: could not request OTA enable via BLE characteristic")
-            else:
-                # Give the device a bit of time to create the OTA service
-                await asyncio.sleep(1.5)
+        if not wrote_enable:
+            print("Warning: could not request OTA enable via BLE characteristic")
+            return False
 
-            # After requesting OTA mode, the device may stop advertising briefly
-            # and re-advertise with the OTA service. Wait for it to reappear and
-            # then connect. This is more robust than trying to reconnect immediately.
+        # Give device time to process
+        await asyncio.sleep(1.5)
+
+        # Check if update characteristic is visible on current connection
+        try:
+            try:
+                services = await self.client.get_services()
+            except AttributeError:
+                services = getattr(self.client, 'services', None)
+        except Exception:
+            services = None
+
+        def find_update_char(svcs):
+            if not svcs:
+                return False
+            for svc in svcs:
+                for char in svc.characteristics:
+                    if str(char.uuid).lower() == UPDATE_CHARACTERISTIC_UUID.lower():
+                        return True
+            return False
+
+        if find_update_char(services):
+            print("Update characteristic available on current connection; proceeding")
+        else:
+            # Try scan/reconnect flow
+            print("Update characteristic not visible on current connection; waiting for device to re-advertise")
+
             async def wait_for_device(addr: str, timeout: float = 15.0) -> bool:
-                """Scan until the device address is seen or timeout reached."""
                 deadline = asyncio.get_event_loop().time() + timeout
                 while asyncio.get_event_loop().time() < deadline:
                     print("Scanning for device to reappear...")
@@ -386,107 +393,77 @@ class OTAUpdater:
                     except Exception as e:
                         print(f"Scan failed: {e}")
                         devices = []
-
                     for d in devices:
                         if d.address.lower() == addr.lower():
                             print(f"Device {addr} found again")
                             return True
-
                     await asyncio.sleep(0.5)
                 return False
 
+            # Disconnect current client and wait for device
             try:
-                # Cleanly disconnect the current client if still connected
+                await self.disconnect()
+            except Exception:
+                pass
+
+            found = await wait_for_device(self.address, timeout=20.0)
+            if not found:
+                print("ERROR: Device did not reappear after requesting OTA mode")
+                return False
+
+            if not await self.connect(self.address):
+                print("ERROR: Failed to connect to device after it reappeared")
+                return False
+
+            # Poll for update characteristic
+            ota_found = False
+            deadline = asyncio.get_event_loop().time() + 15.0
+            while asyncio.get_event_loop().time() < deadline:
                 try:
-                    await self.disconnect()
+                    try:
+                        services = await self.client.get_services()
+                    except AttributeError:
+                        services = getattr(self.client, 'services', None)
                 except Exception:
-                    pass
+                    services = None
 
-                found = await wait_for_device(self.address, timeout=20.0)
-                if not found:
-                    print("ERROR: Device did not reappear after requesting OTA mode")
-                    return False
+                if find_update_char(services):
+                    ota_found = True
+                    break
 
-                # Connect to the device again
-                if not await self.connect(self.address):
-                    print("ERROR: Failed to connect to device after it reappeared")
-                    return False
+                await asyncio.sleep(0.8)
 
-                # After reconnecting, poll services until the OTA update service appears
-                print("Waiting for OTA service to appear on device...")
-                ota_found = False
-                deadline = asyncio.get_event_loop().time() + 15.0
-                while asyncio.get_event_loop().time() < deadline:
-                    try:
-                        # obtain services (supporting multiple bleak versions)
-                        try:
-                            services = await self.client.get_services()
-                        except AttributeError:
-                            services = getattr(self.client, 'services', None)
-
-                        if services:
-                            for svc in services:
-                                if str(svc.uuid).lower() == UPDATE_SERVICE_UUID.lower():
-                                    ota_found = True
-                                    break
-                        if ota_found:
-                            break
-                    except Exception as e:
-                        print(f"Service poll error: {e}")
-
-                    await asyncio.sleep(0.8)
-
-                if not ota_found:
-                    # Read main characteristic value to see if ENABLE_OTA was acknowledged
-                    try:
-                        val = await self.client.read_gatt_char(CHARACTERISTIC_UUID)
-                        valstr = val.decode('utf-8', errors='ignore')
-                        print(f"Main characteristic value after enable attempt: {valstr}")
-                    except Exception as e:
-                        print(f"Could not read main characteristic: {e}")
-
-                    print("ERROR: OTA service did not appear on device after enable request")
-                    return False
-            except Exception as e:
-                print(f"Reconnect flow failed: {e}")
+            if not ota_found:
+                try:
+                    val = await self.client.read_gatt_char(CHARACTERISTIC_UUID)
+                    valstr = val.decode('utf-8', errors='ignore')
+                    print(f"Main characteristic value after enable attempt: {valstr}")
+                except Exception as e:
+                    print(f"Could not read main characteristic: {e}")
+                print("ERROR: Update characteristic did not appear on device after enable request")
                 return False
 
-            # Check version
-            await self.check_version()
-            
-            # Prepare update
-            if not await self.prepare_update():
-                return False
-            
-            # Start update
-            if not await self.start_update():
-                return False
-            
-            # Send firmware size
-            if not await self.send_firmware_size(firmware_size):
-                return False
-            
-            # Send firmware chunks
-            if not await self.send_firmware_chunks(firmware_data, md5_hash):
-                return False
-            
-            # Finalize update
-            if not await self.finalize_update():
-                return False
-            
-            print("\n" + "="*60)
-            print("OTA UPDATE COMPLETED SUCCESSFULLY!")
-            print("="*60)
-            print("The device will reboot with the new firmware.")
-            print("You may need to reconnect after the device reboots.")
-            return True
-            
-        except FileNotFoundError:
-            print(f"ERROR: Firmware file not found: {firmware_path}")
+        # Check version (informational only; continue even if it fails)
+        v = await self.check_version()
+
+        # Prepare, start, send and finalize update
+        if not await self.prepare_update():
             return False
-        except Exception as e:
-            print(f"ERROR: Update failed: {e}")
+        if not await self.start_update():
             return False
+        if not await self.send_firmware_size(firmware_size):
+            return False
+        if not await self.send_firmware_chunks(firmware_data, md5_hash):
+            return False
+        if not await self.finalize_update():
+            return False
+
+        print("\n" + "="*60)
+        print("OTA UPDATE COMPLETED SUCCESSFULLY!")
+        print("="*60)
+        print("The device will reboot with the new firmware.")
+        print("You may need to reconnect after the device reboots.")
+        return True
 
 
 async def main():
