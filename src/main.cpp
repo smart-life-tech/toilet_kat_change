@@ -901,19 +901,28 @@ void server_setup(bool includeOTA = false)
     version_characteristic->setValue("v1.0");
     Serial.println("Version characteristic set to dummy value");
 
-    // DON'T create update service at startup - create it dynamically in enableOTA()
-    // DON'T create update service at startup - create it dynamically in enableOTA()
-    update_service = NULL;
-    update_characteristic = NULL;
+    // Create update characteristic as part of main service (avoids UUID parsing crash)
+    // This is used for OTA commands and is always available for the Python client
+    Serial.println("Creating update characteristic in main service...");
+    update_characteristic = blue_service->createCharacteristic(
+        UPDATE_CHARACTERISTIC_UUID,
+        BLECharacteristic::PROPERTY_READ |
+            BLECharacteristic::PROPERTY_WRITE);
+    
+    // Set callback for OTA update commands
+    update_characteristic->setCallbacks(new update_characteristic_callbacks());
+    update_characteristic->setValue("READY");
+    Serial.println("Update characteristic created and callback set");
 
     // Starts the service on the server
     blue_service->start();
 
+    // Set update_service to NULL since we're not using a separate OTA service anymore
+    update_service = NULL;
+    
     // Starts broadcasting so any devices can now find it and connect
-    // Only advertise main service - OTA service will be added in enableOTA()
     BLEAdvertising *blue_advert = blue_server->getAdvertising();
     blue_advert->addServiceUUID(SERVICE_UUID);
-    // Don't add UPDATE_SERVICE_UUID here - it will be added in enableOTA()
     blue_advert->setScanResponse(true);
     // Functions that help with iPhone connections issue
     blue_advert->setMinPreferred(0x06);
@@ -1653,7 +1662,7 @@ void testHeaterCurrent()
 void setup()
 {
     Serial.begin(115200); // Increased baud rate for faster output
-    delay(7000);          // Longer delay to ensure Serial is ready
+    delay(4000);          // Longer delay to ensure Serial is ready
     Serial.println("\n\n=== SETUP STARTING ===");
     Serial.printf("Free heap at startup: %d bytes\n", ESP.getFreeHeap());
     Serial.printf("Largest free block: %d bytes\n", ESP.getMaxAllocHeap());
