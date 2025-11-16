@@ -1,6 +1,6 @@
 BLE OTA Instructions
-
-This project already includes a BLE-based OTA implementation in `src/main.cpp` and a client script `ota_update.py` that can push a compiled firmware image to the device over BLE.
+to test on your own end, set dev on the first line to `true`. 
+This project already includes a BLE-based OTA implementation in `src/main.cpp` (since you are using arduino, you will need to copy this `main.cpp` code to the arduino ide and compile)and a client script `ota_update.py` that can push a compiled firmware image to the device over BLE.
 
 Quick summary
 - The device advertises a main service and dynamically adds an OTA service when OTA mode is enabled (hold both hardware buttons for the configured trigger sequence).
@@ -48,8 +48,8 @@ python ota_update.py ".pio\build\esp32dev\firmware.bin" --address "AA:BB:CC:DD:E
 ```
 
 Tips & troubleshooting
-- Make sure the device is in OTA mode (hold both configured buttons for the OTA trigger sequence, see `src/main.cpp` behavior for details). The device will open an OTA window (default 1 minute) and advertise the OTA service UUID `5636340f-afc7-47b1-b0a8-15bcb9d7d29a6`.
-- If the script fails to connect, run the scanner-only flow:
+- Make sure the device is in OTA mode (hold both configured buttons for the OTA trigger sequence, see `src/main.cpp` behavior for details). The device will open an OTA window (default 1 minute) and advertise the OTA service UUID `5636340f-afc7-47b1-b0a8-15bcb9d7d29a6`. or send `ENABLE_OTA` OVER SERIAL
+- If the script fails to connect, run the scanner-only flow: OR USE THE SCANNER.PY FILE IN THIS DIRECTORY
 
 ```powershell
 # Run the scanner in Python REPL or temporary script to confirm device name/address
@@ -63,6 +63,7 @@ for d in a:
 PY
 ```
 
-- BLE MTU and chunk size: the script uses 400 bytes per chunk by default; if you encounter write failures lower this to ~200.
+- BLE MTU and chunk size: the script uses 512 bytes per chunk by default; if you encounter write failures lower this to ~200.
 - If the firmware is larger than the OTA partition the device may reject the update — the script prints firmware size and warns.
 
+ALSO USE THE PARTITION THAT I USE IN P.PARTITION ANY OTHER SETUP WILL RESELT IN ERROR, the code has been tested to be working okay here on my esp32. 

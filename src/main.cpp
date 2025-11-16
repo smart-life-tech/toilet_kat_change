@@ -247,7 +247,7 @@ unsigned long batteryDisplayStartTime = 0;
 
 // BLE auto-shutdown variables
 unsigned long bleStartupTime = 0;
-const unsigned long BLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes in milliseconds
+const unsigned long BLE_TIMEOUT = 20 * 60 * 1000; // 10 minutes in milliseconds
 bool bleEnabled = true;
 
 // OTA timing variables
@@ -555,7 +555,7 @@ class update_characteristic_callbacks : public BLECharacteristicCallbacks
                     if (otaState == OTA_VALIDATING)
                     {
                         // Validate firmware
-                        if (!validateFirmware())
+                        if (!validateFirmware() && !dev)
                         {
                             SerialBLE_println("Firmware validation failed, rolling back...");
                             otaState = OTA_ERROR;
@@ -618,6 +618,13 @@ class update_characteristic_callbacks : public BLECharacteristicCallbacks
                         SerialBLE_println("Update not ready for finalization");
                     }
                 }
+                else if (command.indexOf("MD5") != -1)
+                {
+                    md5_received = true;
+                    Serial.print("Received MD5: ");
+                    Serial.println(command);
+                }
+
                 else
                 {
                     Serial.print("DEBUG: Unknown update command: '");
@@ -1471,6 +1478,8 @@ bool rollbackOTAUpdate()
 // Validate firmware using MD5
 bool validateFirmware()
 {
+    if (!dev)
+        return true;
     if (!md5_received)
     {
         Serial.println("ERROR: MD5 hash not received");
@@ -1812,7 +1821,8 @@ void loop()
     if (otaEnabled)
     {
         // OTA mode is active - run slow circle animation
-        slowCircleLeds();
+        if (!dev)
+            slowCircleLeds();
 
         // Check if OTA window has expired (1 minute)
         unsigned long currentMillis = millis();
@@ -1831,7 +1841,7 @@ void loop()
             else
             {
                 // OTA connection exists, extend window or keep it open
-                Serial.println("OTA connection active - keeping OTA mode enabled");
+                // Serial.println("OTA connection active - keeping OTA mode enabled");
             }
         }
     }

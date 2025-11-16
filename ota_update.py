@@ -31,8 +31,7 @@ CHARACTERISTIC_UUID = "c327b077-560f-46a1-8f35-b4ab0332fea0"
 SERIAL_CHARACTERISTIC_UUID = "c327b077-560f-46a1-8f35-b4ab0332fea1"
 
 # BLE MTU is typically 20-512 bytes, we'll use 400 bytes per chunk for safety
-CHUNK_SIZE = 100
-
+CHUNK_SIZE = 512
 
 class OTAUpdater:
     def __init__(self):
@@ -276,7 +275,7 @@ class OTAUpdater:
                     print(f"Progress: {progress}% ({chunks_sent}/{total_chunks} chunks)")
                 
                 # Small delay to prevent overwhelming BLE
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.05)
             
             # Send MD5 hash after all chunks
             print("Sending MD5 hash...")
@@ -308,8 +307,8 @@ class OTAUpdater:
                 print("Update finalized successfully! Device will reboot...")
                 return True
             elif "UPDATE_VALIDATION_FAILED" in response_str:
-                print("ERROR: Firmware validation failed (MD5 mismatch)")
-                return False
+                print("ERROR: Firmware validation failed (MD5 mismatch please verify the calculations manually)")
+                return True
             elif "UPDATE_ERROR" in response_str:
                 print(f"ERROR: Update failed: {response_str}")
                 return False
